@@ -1,0 +1,107 @@
+# Whole system:  docker compose up --build
+#
+# Infrastructure ports are bound to 127.0.0.1 only: the demo credentials (fleet/fleet) and the
+# anonymous broker must not be reachable from the network. The API (8080) is the one public port.
+# `name` pins the project name so containers and volumes are called the same whatever the
+# folder is named.
+name: transjakarta-fleet
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: fleet
+      POSTGRES_PASSWORD: fleet
+      POSTGRES_DB: fleet
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fleet -d fleet"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports:
+      - "127.0.0.1:1883:1883"
+    volumes:
+      - ./deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquittodata:/mosquitto/data
+    healthcheck:
+      # $$ stops Compose from interpolating; the broker receives a literal $SYS topic.
+      test: ["CMD-SHELL", "mosquitto_sub -h localhost -t '$$SYS/#' -C 1 -i healthcheck -W 3 > /dev/null"]
+      interval: 3s
+      timeout: 5s
+      retries: 15
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      # A dedicated user: the built-in guest/guest account only accepts connections from
+      # inside the container, so it would be refused when a client runs on the host.
+      RABBITMQ_DEFAULT_USER: fleet
+      RABBITMQ_DEFAULT_PASS: fleet
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672" # management UI: http://localhost:15672 (fleet / fleet)
+    volumes:
+      - rabbitdata:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 15
+
+  api:
+    build: .
+    command: ["/api"]
+    environment: &app-env
+      LOG_LEVEL: info
+      HTTP_ADDR: ":8080"
+      DATABASE_URL: postgres://fleet:fleet@postgres:5432/fleet?sslmode=disable
+      MQTT_BROKER_URL: tcp://mosquitto:1883
+      MQTT_CLIENT_ID: fleet-api # fixed: the broker keys the persistent session by it, so run one api only
+      RABBITMQ_URL: amqp://fleet:fleet@rabbitmq:5672/
+      # Demo geofence: the example coordinate from the test PDF (not an official location).
+      GEOFENCE_CENTER_LAT: "-6.2088"
+      GEOFENCE_CENTER_LON: "106.8456"
+      GEOFENCE_RADIUS_M: "50"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres: { condition: service_healthy }
+      mosquitto: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: on-failure
+
+  worker:
+    build: .
+    command: ["/worker"]
+    environment: *app-env
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+    restart: on-failure
+
+  # Mock vehicles (B2001TJ, B2002TJ), one reading each every 2 seconds. To feed the system by hand
+  # instead, run `docker compose stop publisher`.
+  publisher:
+    build: .
+    command: ["/publisher"]
+    environment: *app-env
+    depends_on:
+      mosquitto: { condition: service_healthy }
+      api: { condition: service_healthy }
+    restart: on-failure
+
+volumes:
+  pgdata:
+  mosquittodata:
+  rabbitdata:

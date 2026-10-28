@@ -1,0 +1,45 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: fleet
+          POSTGRES_PASSWORD: fleet
+          POSTGRES_DB: fleet
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U fleet -d fleet" --health-interval 3s --health-timeout 3s --health-retries 15
+      rabbitmq:
+        image: rabbitmq:3.13-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: fleet
+          RABBITMQ_DEFAULT_PASS: fleet
+        ports: ["5672:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping" --health-interval 5s --health-timeout 10s --health-retries 15
+    env:
+      DATABASE_URL: postgres://fleet:fleet@localhost:5432/fleet?sslmode=disable
+      RABBITMQ_URL: amqp://fleet:fleet@localhost:5672/
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: vet
+        run: go vet ./... && go vet -tags integration ./...
+      - name: unit tests (race detector)
+        run: go test -race -count=1 ./...
+      - name: integration tests (race detector)
+        run: go test -race -tags integration -count=1 ./...
+      - name: docker compose config is valid
+        run: docker compose config -q

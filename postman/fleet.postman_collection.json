@@ -1,0 +1,125 @@
+{
+  "info": {
+    "name": "Transjakarta Fleet Management",
+    "description": "REST API of the fleet service. Start the stack with `docker compose up --build`, then run the collection (or the requests one by one). Vehicles B2001TJ and B2002TJ are fed by the mock publisher; B1234XYZ (the test document's example vehicle) is deliberately left for manual tests; the history requests ask for the last 10 minutes by default.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080" },
+    { "key": "vehicleId", "value": "B2001TJ" },
+    { "key": "specVehicleId", "value": "B1234XYZ" },
+    { "key": "start", "value": "1715000000" },
+    { "key": "end", "value": "1715009999" }
+  ],
+  "item": [
+    {
+      "name": "Health check",
+      "request": { "method": "GET", "url": "{{baseUrl}}/healthz" },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('200 and status ok', function () {",
+        "  pm.response.to.have.status(200);",
+        "  pm.expect(pm.response.json().status).to.eql('ok');",
+        "});"
+      ] } }]
+    },
+    {
+      "name": "Get latest location",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/vehicles/{{vehicleId}}/location",
+        "description": "Latest known location (greatest timestamp) of a vehicle."
+      },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('200 with the four spec fields', function () {",
+        "  pm.response.to.have.status(200);",
+        "  var b = pm.response.json();",
+        "  pm.expect(Object.keys(b)).to.eql(['vehicle_id', 'latitude', 'longitude', 'timestamp']);",
+        "  pm.expect(b.vehicle_id).to.eql(pm.variables.get('vehicleId'));",
+        "});"
+      ] } }]
+    },
+    {
+      "name": "Get location history (last 10 minutes)",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/vehicles/{{vehicleId}}/history?start={{recentStart}}&end={{recentEnd}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["vehicles", "{{vehicleId}}", "history"],
+          "query": [
+            { "key": "start", "value": "{{recentStart}}" },
+            { "key": "end", "value": "{{recentEnd}}" }
+          ]
+        },
+        "description": "Works with the mock publisher running. Both bounds are inclusive; result is a JSON array, oldest first."
+      },
+      "event": [
+        { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+          "var now = Math.floor(Date.now() / 1000);",
+          "pm.variables.set('recentStart', now - 600);",
+          "pm.variables.set('recentEnd', now);"
+        ] } },
+        { "listen": "test", "script": { "type": "text/javascript", "exec": [
+          "pm.test('200 and an array ordered by timestamp', function () {",
+          "  pm.response.to.have.status(200);",
+          "  var rows = pm.response.json();",
+          "  pm.expect(rows).to.be.an('array');",
+          "  for (var i = 1; i < rows.length; i++) { pm.expect(rows[i].timestamp).to.be.at.least(rows[i - 1].timestamp); }",
+          "});"
+        ] } }
+      ]
+    },
+    {
+      "name": "Get location history (fixed range from the spec)",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/vehicles/{{specVehicleId}}/history?start={{start}}&end={{end}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["vehicles", "{{specVehicleId}}", "history"],
+          "query": [
+            { "key": "start", "value": "{{start}}" },
+            { "key": "end", "value": "{{end}}" }
+          ]
+        },
+        "description": "The example range from the test document. Publish the spec's example payload with mosquitto_pub (see README) to get a row in this range."
+      },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('200 and an array (possibly empty)', function () {",
+        "  pm.response.to.have.status(200);",
+        "  pm.expect(pm.response.json()).to.be.an('array');",
+        "});"
+      ] } }]
+    },
+    {
+      "name": "Error: unknown vehicle",
+      "request": { "method": "GET", "url": "{{baseUrl}}/vehicles/DOES-NOT-EXIST/location" },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('404 with error body', function () {",
+        "  pm.response.to.have.status(404);",
+        "  pm.expect(pm.response.json().error.code).to.eql('not_found');",
+        "});"
+      ] } }]
+    },
+    {
+      "name": "Error: start after end",
+      "request": { "method": "GET", "url": "{{baseUrl}}/vehicles/{{vehicleId}}/history?start=2000&end=1000" },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('400 invalid_request', function () {",
+        "  pm.response.to.have.status(400);",
+        "  pm.expect(pm.response.json().error.code).to.eql('invalid_request');",
+        "});"
+      ] } }]
+    },
+    {
+      "name": "Error: missing end parameter",
+      "request": { "method": "GET", "url": "{{baseUrl}}/vehicles/{{vehicleId}}/history?start=1000" },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('400 invalid_request', function () {",
+        "  pm.response.to.have.status(400);",
+        "  pm.expect(pm.response.json().error.code).to.eql('invalid_request');",
+        "});"
+      ] } }]
+    }
+  ]
+}
